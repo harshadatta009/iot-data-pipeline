@@ -1,0 +1,42 @@
+# Ignore Python cache and build files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+build/
+dist/
+
+# Ignore Spark checkpoints and logs
+checkpoints/
+logs/
+prometheus-data/
+# Ignore Ivy (Java/Scala dependency) caches
+ivy/
+ivy-cache/
+
+# Ignore temporary files and system artifacts
+*.log
+*.tmp
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Ignore environment files
+.env
+*.env
+
+# Ignore Docker-related runtime files (but keep compose/swarm config)
+*.pid
+*.sock
+*.tar
+!docker-swarm.yaml
+
+# Ignore IDE settings
+.vscode/
+.idea/
+
+# Ignore virtual environments
+venv/
+.env/
