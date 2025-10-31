@@ -1,0 +1,188 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: sparkuser
+      POSTGRES_PASSWORD: sparkpass
+      POSTGRES_DB: sensordb
+    volumes:
+    - postgres_data:/var/lib/postgresql/data
+    ports:
+    - "5432:5432"
+    networks:
+    - iot-net
+    deploy:
+      restart_policy:
+        condition: on-failure
+  producer:
+    image: producer:v2
+    volumes:
+    - ./producer:/app # Mount code for live updates
+    - ./logs:/app/logs # Store logs persistently on host
+    networks:
+    - iot-net
+    depends_on:
+    - kafka
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  kafka:
+    image: apache/kafka:latest
+    environment:
+      # ---- KRaft mode configuration ----
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_NUM_PARTITIONS: 1
+      # Optional unique cluster ID for KRaft metadata
+      CLUSTER_ID: 'a1b2c3d4e5f6g7h8i9j0klmnopqrstu'
+    ports:
+    - "9092:9092"
+    volumes:
+    - kafka_data:/var/lib/kafka
+    networks:
+    - iot-net
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  spark:
+    image: apache/spark:3.5.0
+    hostname: spark
+    command: >
+      bash -c "
+        export SPARK_HOME=/opt/spark &&
+        export _JAVA_OPTIONS='-Duser.home=/tmp' &&
+        export SPARK_LOCAL_DIRS=/tmp &&
+        mkdir -p /tmp/.ivy2 &&
+        /opt/spark/sbin/start-master.sh &&
+        tail -F /opt/spark/logs/*.out
+      "
+    environment:
+    - SPARK_USER=root
+    - _JAVA_OPTIONS=-Duser.home=/tmp
+    - SPARK_LOCAL_DIRS=/tmp
+    ports:
+    - "7077:7077"
+    - "8080:8080"
+    volumes:
+    - ./spark-apps:/opt/spark-apps
+    - ./ivy-cache:/tmp/.ivy2
+    networks:
+    - iot-net
+    depends_on:
+    - kafka
+    - postgres
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  spark-worker:
+    image: apache/spark:3.5.0
+    hostname: spark-worker
+    command: >
+      bash -c "
+        export SPARK_HOME=/opt/spark &&
+        export _JAVA_OPTIONS='-Duser.home=/tmp' &&
+        export SPARK_LOCAL_DIRS=/tmp &&
+        mkdir -p /tmp/.ivy2 &&
+        /opt/spark/sbin/start-worker.sh spark://spark:7077 &&
+        tail -F /opt/spark/logs/*.out
+      "
+    environment:
+    - SPARK_WORKER_CORES=1
+    - SPARK_WORKER_MEMORY=1G
+    - SPARK_USER=root
+    - _JAVA_OPTIONS=-Duser.home=/tmp
+    - SPARK_LOCAL_DIRS=/tmp
+    volumes:
+    - ./spark-apps:/opt/spark-apps
+    - ./ivy-cache:/tmp/.ivy2
+    networks:
+    - iot-net
+    depends_on:
+    - spark
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  spark-job:
+    image: apache/spark:3.5.0
+    hostname: spark-job
+    entrypoint: ["/opt/spark/bin/spark-submit"]
+    command: ["--master", "spark://spark:7077", "--conf", "spark.driver.extraJavaOptions=-Duser.home=/tmp", "--conf", "spark.executor.extraJavaOptions=-Duser.home=/tmp", "--packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,org.postgresql:postgresql:42.7.3", "/opt/spark-apps/spark_streaming.py"]
+    environment:
+    - SPARK_USER=root
+    - SPARK_LOCAL_DIRS=/tmp
+    volumes:
+    - ./spark-apps:/opt/spark-apps
+    - ./ivy-cache:/tmp/.ivy2
+    - ./checkpoints:/tmp/spark-checkpoints
+    networks:
+    - iot-net
+    depends_on:
+    - spark
+    - kafka
+    - postgres
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+    - "8081:8080"
+    environment:
+    - KAFKA_CLUSTERS_0_NAME=local
+    - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+    networks:
+    - iot-net
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+    - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    - ./prometheus-data:/prometheus
+    networks:
+    - iot-net
+    ports:
+    - "9090:9090"
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+    - GF_SECURITY_ADMIN_USER=admin
+    - GF_SECURITY_ADMIN_PASSWORD=admin
+    networks:
+    - iot-net
+    ports:
+    - "3000:3000"
+    depends_on:
+    - prometheus
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+volumes:
+  postgres_data:
+  kafka_data:
+  spark-apps:
+
+
+networks:
+  iot-net:
+    driver: overlay
