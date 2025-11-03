@@ -7,6 +7,7 @@ import random
 from datetime import datetime, timedelta, timezone
 from itertools import cycle
 import sys
+import os
 
 # ------------------------------
 # 🔧 Logging Configuration
@@ -32,7 +33,7 @@ logger.add(
 # ------------------------------
 # ⚙️ Kafka Configuration
 # ------------------------------
-BOOTSTRAP_SERVERS = ["kafka:9092"]
+BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka1:9092").split(",")
 TOPIC = "sensor_data"
 
 MAX_RETRIES = 10

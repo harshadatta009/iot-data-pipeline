@@ -1,15 +1,71 @@
 global:
-  scrape_interval: 5s
+  scrape_interval: 10s
+  evaluation_interval: 10s
 
+# ===========================
+#   SCRAPE JOBS
+# ===========================
 scrape_configs:
-- job_name: "spark"
-  static_configs:
-  - targets: ["localhost:8080"]
 
-- job_name: "kafka"
+# ---------- PROMETHEUS SELF ----------
+- job_name: 'prometheus'
   static_configs:
-  - targets: ["localhost:9092"]
+  - targets: ['prometheus:9090']
 
-- job_name: "postgres"
+# ---------- KAFKA METRICS ----------
+- job_name: 'kafka-exporter'
   static_configs:
-  - targets: ["localhost:5432"]
+  - targets: ['kafka-exporter:9308']
+
+- job_name: 'kafka-brokers'
+  static_configs:
+  - targets: ['kafka1:7071', 'kafka2:7071', 'kafka3:7071']
+  metrics_path: /metrics
+
+# ---------- SPARK MASTER ----------
+- job_name: 'spark-master'
+  static_configs:
+  - targets: ['spark:8080']
+  metrics_path: /metrics
+  relabel_configs:
+  - source_labels: [__address__]
+    target_label: instance
+    replacement: spark-master
+
+# ---------- SPARK WORKERS ----------
+- job_name: 'spark-workers'
+  static_configs:
+  - targets:
+    - 'spark-worker-1:8081'
+    - 'spark-worker-2:8081'
+  metrics_path: /metrics
+  relabel_configs:
+  - source_labels: [__address__]
+    target_label: instance
+    replacement: spark-workers
+
+# ---------- POSTGRESQL ----------
+- job_name: 'postgres'
+  static_configs:
+  - targets: ['postgres-exporter:9187']
+  metrics_path: /metrics
+  relabel_configs:
+  - source_labels: [__address__]
+    target_label: instance
+    replacement: postgres
+
+# ---------- DOCKER SWARM / NODES ----------
+- job_name: 'docker'
+  metrics_path: /metrics
+  static_configs:
+  - targets: ['docker.for.mac.localhost:9323'] # adjust for Linux hosts
+  relabel_configs:
+  - source_labels: [__address__]
+    target_label: instance
+    replacement: docker-swarm
+
+# ---------- GRAFANA ----------
+- job_name: 'grafana'
+  static_configs:
+  - targets: ['grafana:3000']
+  metrics_path: /metrics
