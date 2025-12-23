@@ -1,11 +1,18 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, window, avg
+from pyspark.sql.functions import (
+    from_json,
+    col,
+    window,
+    avg,
+    to_timestamp,
+    current_timestamp,
+    coalesce,
+)
 from pyspark.sql.types import (
     StructType,
     StructField,
     StringType,
     DoubleType,
-    TimestampType,
 )
 
 # ---------------------------------------
@@ -19,16 +26,14 @@ spark = (
         "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.0,"
         "org.postgresql:postgresql:42.7.3",
     )
-    .config("spark.sql.shuffle.partitions", "10")
-    .config("spark.streaming.backpressure.enabled", "true")
-    .config("spark.streaming.kafka.maxRatePerPartition", "1000")
+    .config("spark.sql.shuffle.partitions", "4")
     .getOrCreate()
 )
 
 spark.sparkContext.setLogLevel("WARN")
 
 # ---------------------------------------
-# 🧱 Define Schema (matches your producer)
+# 🧱 Schema
 # ---------------------------------------
 schema = StructType(
     [
@@ -40,31 +45,41 @@ schema = StructType(
 )
 
 # ---------------------------------------
-# 📥 Read from Kafka
+# 📥 Kafka source
 # ---------------------------------------
 df_raw = (
     spark.readStream.format("kafka")
     .option("kafka.bootstrap.servers", "kafka:9092")
     .option("subscribe", "sensor_data")
-    .option("startingOffsets", "latest")
+    .option("startingOffsets", "earliest")
     .option("failOnDataLoss", "false")
     .load()
 )
 
-# Parse JSON from Kafka 'value' field
+# ---------------------------------------
+# 🧾 JSON parsing
+# ---------------------------------------
 df_json = df_raw.select(
     from_json(col("value").cast("string"), schema).alias("data")
 ).select("data.*")
 
-# Convert timestamp string to proper TimestampType
-df_typed = df_json.withColumn("timestamp", col("timestamp_ist").cast(TimestampType()))
+# ---------------------------------------
+# ⏱️ FIXED timestamp parsing (milliseconds supported)
+# ---------------------------------------
+df_typed = df_json.withColumn(
+    "event_time",
+    coalesce(
+        to_timestamp(col("timestamp_ist"), "yyyy-MM-dd HH:mm:ss.SSS"),
+        current_timestamp(),
+    ),
+)
 
 # ---------------------------------------
-# 🧮 Aggregate: Average every 2 minutes per MAC
+# 🧮 Windowed aggregation
 # ---------------------------------------
 agg_df = (
-    df_typed.withWatermark("timestamp", "2 minutes")
-    .groupBy(window(col("timestamp"), "2 minutes"), col("mac_id"))
+    df_typed.withWatermark("event_time", "2 minutes")
+    .groupBy(window(col("event_time"), "2 minutes"), col("mac_id"))
     .agg(
         avg("temperature").alias("avg_temperature"),
         avg("humidity").alias("avg_humidity"),
@@ -73,9 +88,15 @@ agg_df = (
 
 
 # ---------------------------------------
-# 🗄️ Write aggregated results to PostgreSQL
+# 🗄️ Write to PostgreSQL
 # ---------------------------------------
 def write_to_postgres(batch_df, batch_id):
+    count = batch_df.count()
+    print(f"Batch {batch_id} → rows = {count}")
+
+    if count == 0:
+        return
+
     (
         batch_df.withColumn("window_start", col("window.start"))
         .withColumn("window_end", col("window.end"))
@@ -92,10 +113,10 @@ def write_to_postgres(batch_df, batch_id):
 
 
 # ---------------------------------------
-# ▶️ Start Streaming Query
+# ▶️ Start stream
 # ---------------------------------------
 query = (
-    agg_df.writeStream.outputMode("update")
+    agg_df.writeStream.outputMode("append")
     .foreachBatch(write_to_postgres)
     .option("checkpointLocation", "/tmp/spark-checkpoints/sensor_avg")
     .start()
